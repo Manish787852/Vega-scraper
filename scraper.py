@@ -98,89 +98,86 @@ def get_movie_links(page_html):
     return [a["href"] for a in soup.select("h3.entry-title a") if a.get("href")]
 
 def resolve_vgmlinkz(vgm, context):
-    """Visit vgm page, click through common shortener buttons and extract prioritized final link."""
+    """Visit VGMLinkz, wait for JS, click any 'continue' buttons, extract final link across all tags."""
     vpage = context.new_page()
     try:
-        vpage.goto(vgm, wait_until="domcontentloaded", timeout=60000)
+        vpage.goto(vgm, wait_until="domcontentloaded", timeout=90000)
         time.sleep(5)
 
-        # Try clicking common shortener buttons (case-insensitive)
-        click_texts = ["click here to continue", "click here", "continue", "get link", "get links", "proceed"]
-        for txt in click_texts:
-            try:
-                btn = vpage.query_selector(f"text=\"{txt}\"")
-                if not btn:
-                    btn = vpage.query_selector(f"text={txt}")  # fallback
-                if btn:
-                    try:
+        # Try to click through any shorteners twice if needed
+        for _ in range(2):
+            for txt in ["click here", "continue", "proceed", "get link", "get links"]:
+                try:
+                    btn = vpage.query_selector(f"text={txt}")
+                    if btn:
                         btn.click()
-                        logging.info(f"👉 Clicked shortener button: {txt}")
-                        time.sleep(4)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                        logging.info(f"👉 Clicked '{txt}'")
+                        time.sleep(5)
+                except:
+                    continue
 
-        # allow redirects & JS to settle
-        time.sleep(3)
+        # wait again for dynamic content
+        time.sleep(4)
         html = vpage.content()
         vsoup = BeautifulSoup(html, "html.parser")
 
         found_links = set()
 
-        # 1) <a href="">
+        # Search 1️⃣ all attributes of all tags
+        for tag in vsoup.find_all(True):
+            for attr, val in tag.attrs.items():
+                if isinstance(val, str) and any(h in val.lower() for h in HOST_PRIORITY):
+                    found_links.add(val)
+
+        # Search 2️⃣ plain <a href="">
         for a in vsoup.find_all("a", href=True):
             href = a["href"]
-            if any(h in href.lower() for h in HOST_PRIORITY) and not is_episode(href):
+            if any(h in href.lower() for h in HOST_PRIORITY):
                 found_links.add(href)
 
-        # 2) button onclick
-        for btn in vsoup.find_all("button", onclick=True):
-            onclick = btn.get("onclick", "")
-            m = re.search(r"window\.open\(['\"](https?://[^'\"]+)['\"]", onclick)
-            if m:
-                href = m.group(1)
-                if any(h in href.lower() for h in HOST_PRIORITY) and not is_episode(href):
-                    found_links.add(href)
+        # Search 3️⃣ onclick / onmouseover / data-link patterns
+        for attr in ["onclick", "onmouseover", "data-href", "data-link", "data-url"]:
+            for tag in vsoup.find_all(attrs={attr: True}):
+                val = tag.get(attr, "")
+                for m in re.findall(r"https?://[^\s'\"]+", val):
+                    if any(h in m.lower() for h in HOST_PRIORITY):
+                        found_links.add(m)
 
-        # 3) data-href / data-link attributes
-        for tag in vsoup.find_all(attrs=True):
-            for attr in ("data-href", "data-link", "data-url", "href"):
-                if tag.has_attr(attr):
-                    href = tag.get(attr)
-                    if href and any(h in href.lower() for h in HOST_PRIORITY) and not is_episode(href):
-                        found_links.add(href)
-
-        # 4) meta refresh
+        # Search 4️⃣ meta refresh
         for meta in vsoup.find_all("meta", attrs={"http-equiv": True}):
             if meta.get("http-equiv", "").lower() == "refresh":
-                content = meta.get("content", "")
-                m = re.search(r"url=(https?://[^'\"]+)", content, re.I)
+                m = re.search(r"url=(https?://[^\s'\"]+)", meta.get("content", ""), re.I)
                 if m:
-                    href = m.group(1)
-                    if any(h in href.lower() for h in HOST_PRIORITY):
-                        found_links.add(href)
+                    found_links.add(m.group(1))
 
-        # 5) script texts
+        # Search 5️⃣ in script text (JSON blobs or JS redirects)
         for script in vsoup.find_all("script"):
-            text = script.get_text() or ""
-            for match in re.findall(r"https?://[^\s'\"<>]+", text):
-                if any(h in match.lower() for h in HOST_PRIORITY) and not is_episode(match):
-                    found_links.add(match)
+            text = script.get_text()
+            for m in re.findall(r"https?://[^\s'\"<>]+", text):
+                if any(h in m.lower() for h in HOST_PRIORITY):
+                    found_links.add(m)
 
-        # Choose final by HOST_PRIORITY order
+        # Search 6️⃣ in visible text content (last resort)
+        text_dump = vsoup.get_text(" ", strip=True)
+        for m in re.findall(r"https?://[^\s'\"<>]+", text_dump):
+            if any(h in m.lower() for h in HOST_PRIORITY):
+                found_links.add(m)
+
+        # Filter duplicates and episode-related junk
+        clean_links = [l for l in found_links if not is_episode(l)]
+
+        # Prioritize by host order
         for host in HOST_PRIORITY:
-            for link in list(found_links):
+            for link in clean_links:
                 if host in link.lower():
-                    logging.info(f"✅ Resolved {host.upper()} link: {link}")
+                    logging.info(f"✅ Found {host.upper()} link: {link}")
                     return link
 
-        # fallback: any link that looks like google drive or g-direct
-        for link in list(found_links):
-            if "drive" in link.lower() or "gdrive" in link.lower():
-                return link
+        logging.warning(f"⚠️ No valid links found in {vgm}")
+        return None
 
-        logging.warning(f"⚠️ No valid final links found on VGMLinkz: {vgm}")
+    except Exception as e:
+        logging.error(f"❌ Error processing VGMLinkz {vgm}: {e}")
         return None
     finally:
         try:
