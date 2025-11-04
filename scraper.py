@@ -98,86 +98,73 @@ def get_movie_links(page_html):
     return [a["href"] for a in soup.select("h3.entry-title a") if a.get("href")]
 
 def resolve_vgmlinkz(vgm, context):
-    """Visit VGMLinkz, wait for JS, click any 'continue' buttons, extract final link across all tags."""
+    """Open VGMLinkz page and extract final host link using live DOM checks."""
     vpage = context.new_page()
     try:
         vpage.goto(vgm, wait_until="domcontentloaded", timeout=90000)
         time.sleep(5)
+        logging.info(f"🔍 Waiting for real links to appear on {vgm}")
 
-        # Try to click through any shorteners twice if needed
+        # click through shortener buttons up to twice
         for _ in range(2):
-            for txt in ["click here", "continue", "proceed", "get link", "get links"]:
+            for label in ["click here", "continue", "proceed", "get link", "get links"]:
                 try:
-                    btn = vpage.query_selector(f"text={txt}")
-                    if btn:
-                        btn.click()
-                        logging.info(f"👉 Clicked '{txt}'")
+                    el = vpage.query_selector(f"text={label}")
+                    if el:
+                        el.click()
+                        logging.info(f"👉 Clicked '{label}'")
                         time.sleep(5)
-                except:
+                except Exception:
                     continue
 
-        # wait again for dynamic content
-        time.sleep(4)
-        html = vpage.content()
-        vsoup = BeautifulSoup(html, "html.parser")
+        # live retry loop: wait up to 25 s for any link containing a host name
+        deadline = time.time() + 25
+        found = []
+        while time.time() < deadline and not found:
+            anchors = vpage.query_selector_all("a, button, div, span")
+            for el in anchors:
+                try:
+                    href = el.get_attribute("href") or el.get_attribute("data-href") \
+                           or el.get_attribute("data-link") or el.get_attribute("data-url")
+                    onclick = el.get_attribute("onclick") or ""
+                    for val in filter(None, [href, onclick]):
+                        for host in HOST_PRIORITY:
+                            if host in val.lower() and not is_episode(val):
+                                found.append(val)
+                                break
+                except Exception:
+                    pass
+            if not found:
+                time.sleep(2)
 
-        found_links = set()
+        # check inside iframes too
+        if not found:
+            for frame in vpage.frames:
+                try:
+                    anchors = frame.query_selector_all("a")
+                    for el in anchors:
+                        href = el.get_attribute("href")
+                        if href and any(h in href.lower() for h in HOST_PRIORITY):
+                            found.append(href)
+                except Exception:
+                    pass
 
-        # Search 1️⃣ all attributes of all tags
-        for tag in vsoup.find_all(True):
-            for attr, val in tag.attrs.items():
-                if isinstance(val, str) and any(h in val.lower() for h in HOST_PRIORITY):
-                    found_links.add(val)
+        if not found:
+            logging.warning(f"⚠️ No links visible after JS load on {vgm}")
+            return None
 
-        # Search 2️⃣ plain <a href="">
-        for a in vsoup.find_all("a", href=True):
-            href = a["href"]
-            if any(h in href.lower() for h in HOST_PRIORITY):
-                found_links.add(href)
-
-        # Search 3️⃣ onclick / onmouseover / data-link patterns
-        for attr in ["onclick", "onmouseover", "data-href", "data-link", "data-url"]:
-            for tag in vsoup.find_all(attrs={attr: True}):
-                val = tag.get(attr, "")
-                for m in re.findall(r"https?://[^\s'\"]+", val):
-                    if any(h in m.lower() for h in HOST_PRIORITY):
-                        found_links.add(m)
-
-        # Search 4️⃣ meta refresh
-        for meta in vsoup.find_all("meta", attrs={"http-equiv": True}):
-            if meta.get("http-equiv", "").lower() == "refresh":
-                m = re.search(r"url=(https?://[^\s'\"]+)", meta.get("content", ""), re.I)
-                if m:
-                    found_links.add(m.group(1))
-
-        # Search 5️⃣ in script text (JSON blobs or JS redirects)
-        for script in vsoup.find_all("script"):
-            text = script.get_text()
-            for m in re.findall(r"https?://[^\s'\"<>]+", text):
-                if any(h in m.lower() for h in HOST_PRIORITY):
-                    found_links.add(m)
-
-        # Search 6️⃣ in visible text content (last resort)
-        text_dump = vsoup.get_text(" ", strip=True)
-        for m in re.findall(r"https?://[^\s'\"<>]+", text_dump):
-            if any(h in m.lower() for h in HOST_PRIORITY):
-                found_links.add(m)
-
-        # Filter duplicates and episode-related junk
-        clean_links = [l for l in found_links if not is_episode(l)]
-
-        # Prioritize by host order
+        # pick first valid by priority
         for host in HOST_PRIORITY:
-            for link in clean_links:
+            for link in found:
                 if host in link.lower():
                     logging.info(f"✅ Found {host.upper()} link: {link}")
                     return link
 
-        logging.warning(f"⚠️ No valid links found in {vgm}")
+        logging.warning(f"⚠️ Links found but none matched priority on {vgm}")
         return None
 
     except Exception as e:
-        logging.error(f"❌ Error processing VGMLinkz {vgm}: {e}")
+        logging.error(f"❌ VGMLinkz error: {e}")
         return None
     finally:
         try:
