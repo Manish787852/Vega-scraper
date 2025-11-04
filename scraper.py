@@ -187,7 +187,8 @@ def parse_pages(pagestr):
     return [int(pagestr)]
 
 if __name__ == "__main__":
-    pages_input = os.environ.get("PAGES", input("Enter page or range (e.g. 1 or 1-5): "))
+    pages_input = os.environ.get("PAGES", "1-2")  # Default range if Railway variable not set
+    print(f"📄 Running scraper for pages: {pages_input}")
     pages = parse_pages(pages_input)
     run_scraper(pages)
     logging.info("✅ Scraping done. Sending results.txt to Telegram...")
