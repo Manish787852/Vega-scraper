@@ -197,7 +197,7 @@ def parse_pages(pagestr):
     return [int(pagestr)]
 
 if __name__ == "__main__":
-    pagestr = os.environ.get("PAGES", input("Enter page number or range (e.g. 1 or 14-20): "))
+    pagestr = os.environ.get("PAGES", "1-2")  # ✅ No input() — fixed for Railway
     pages = parse_pages(pagestr)
     logging.info(f"🚀 Running scraper for pages {pages}")
     run_scraper(pages)
