@@ -1,0 +1,14 @@
+[build]
+builder = "NIXPACKS"
+
+[phases.setup]
+nixPkgs = ["python3", "pip", "chromium"]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt",
+  "playwright install --with-deps chromium"
+]
+
+[start]
+cmd = "python scraper.py"
