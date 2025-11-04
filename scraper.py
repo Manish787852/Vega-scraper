@@ -122,65 +122,83 @@ def process_movie(movie_url, context):
     if movie_url in scraped:
         logging.info(f"⏭️ Skipping already scraped: {movie_url}")
         return
+
     logging.info(f"🎬 Processing: {movie_url}")
     page = context.new_page()
+
     try:
         page.goto(movie_url, wait_until="domcontentloaded", timeout=60000)
         time.sleep(2)
         soup = BeautifulSoup(page.content(), "html.parser")
 
-        # collect VGMLinkz / direct batch links
+        # ✅ Only pick VGMLinkz or main batch/zip download buttons (ignore episode links)
         vgms = []
         for a in soup.find_all("a", href=True):
             text = a.get_text(" ", strip=True).lower()
             href = a["href"]
-            if ("vgml" in href or "vgmlinkz" in href) and any(k in text for k in ACCEPT_BUTTON_KEYWORDS) and not is_episode(text):
-                vgms.append(href)
-            elif any(k in text for k in ACCEPT_BUTTON_KEYWORDS) and not is_episode(text):
+
+            # Accept only VGMLinkz or batch/zip/full download links
+            if (
+                ("vgml" in href or "vgmlinkz" in href)
+                or any(k in text for k in ["batch", "zip", "download now", "full", "v-cloud"])
+            ) and not is_episode(text):
                 vgms.append(href)
 
         if not vgms:
-            logging.warning(f"⚠️ No valid download links in {movie_url}")
+            logging.warning(f"⚠️ No valid VGMLinkz or batch links found in {movie_url}")
             scraped[movie_url] = True
             save_scraped()
             return
 
-        # process vgmlinkz
+        # ✅ Visit each VGMLinkz page
         for vgm in vgms:
-            logging.info(f"➡️ VGMLinkz: {vgm}")
+            logging.info(f"➡️ Visiting VGMLinkz: {vgm}")
             vpage = context.new_page()
+
             try:
                 vpage.goto(vgm, wait_until="domcontentloaded", timeout=60000)
-                time.sleep(2)
+                time.sleep(3)
                 vsoup = BeautifulSoup(vpage.content(), "html.parser")
+
+                # Collect only prioritized links
                 final_links = []
                 for host in HOST_PRIORITY:
                     for a in vsoup.find_all("a", href=True):
                         href = a["href"]
                         if host in href and not is_episode(href):
                             final_links.append(href)
+
                 if not final_links:
                     continue
 
+                # ✅ Extract final link details
                 for final in final_links:
                     fpage = context.new_page()
                     try:
                         fpage.goto(final, wait_until="domcontentloaded", timeout=60000)
                         time.sleep(2)
                         fsoup = BeautifulSoup(fpage.content(), "html.parser")
+
+                        # Clean title + quality
                         h5 = fsoup.find("h5", class_=re.compile("m-0"))
                         raw = h5.get_text(strip=True) if h5 else fpage.title()
                         title = clean_title(raw)
                         quality = extract_quality(raw)
+
+                        # ✅ Save to results.txt
                         with open(RESULT_FILE, "a", encoding="utf-8") as f:
                             f.write(f"{title}  {quality}  {final}\n")
-                        logging.info(f"✅ {title}  {quality}  {final}")
+
+                        logging.info(f"✅ Saved: {title}  {quality}  {final}")
+
                     finally:
                         fpage.close()
             finally:
                 vpage.close()
+
     except Exception as e:
         logging.error(f"❌ Failed {movie_url}: {e}")
+
     finally:
         scraped[movie_url] = True
         save_scraped()
