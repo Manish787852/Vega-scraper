@@ -8,7 +8,14 @@ Environment variables required:
   TELEGRAM_BOT_TOKEN
   TELEGRAM_CHAT_ID
 """
+import os
+import subprocess
 
+# Ensure Playwright Chromium is installed
+try:
+    subprocess.run(["playwright", "install", "--with-deps", "chromium"], check=True)
+except Exception as e:
+    print("Playwright install failed:", e)
 import os
 import re
 import json
